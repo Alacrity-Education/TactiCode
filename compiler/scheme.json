@@ -1,0 +1,29 @@
+{
+  "program": [
+    {
+      "command": "start"
+    },
+    {
+      "command": "setInstrument",
+      "value": "Drums"
+    },
+    {
+      "command": "repeat",
+      "value": 4,
+      "body": [
+        {
+          "command": "addBeat",
+          "value": "Kick"
+        },
+        {
+          "command": "addBeat",
+          "value": "Snare"
+        }
+      ]
+    },
+    {
+      "command": "play"
+    }
+  ],
+  "params":["downloadable song"]
+}

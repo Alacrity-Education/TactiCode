@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Test Client</title>
+    <!-- Using Tailwind CSS for clean styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Simple Inter font */
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 flex items-center justify-center min-h-screen">
+
+    <div class="w-full max-w-2xl bg-white rounded-lg shadow-xl p-6 md:p-8">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-800 mb-4">SSE Test Client</h1>
+        <p class="text-gray-600 mb-6">
+            Enter a unique client ID to connect to the <code>/sse/[id]</code> endpoint.
+        </p>
+
+        <!-- Connection Controls -->
+        <div class="flex flex-col sm:flex-row gap-4 mb-6">
+            <input 
+                type="text" 
+                id="clientId" 
+                placeholder="Enter Client ID (e.g., user123)" 
+                class="flex-grow w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div class="flex gap-4">
+                <button 
+                    id="connectBtn" 
+                    class="w-full sm:w-auto px-6 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition duration-200 shadow-md">
+                    Connect
+                </button>
+                <button 
+                    id="disconnectBtn" 
+                    disabled
+                    class="w-full sm:w-auto px-6 py-2 bg-gray-400 text-white font-semibold rounded-md transition duration-200 cursor-not-allowed">
+                    Disconnect
+                </button>
+            </div>
+        </div>
+
+        <!-- Message Log -->
+        <div>
+            <h2 class="text-xl font-semibold mb-3">Message Log</h2>
+            <div id="messages" class="w-full h-64 bg-gray-900 text-white font-mono text-sm p-4 rounded-md overflow-y-auto space-y-2">
+                <div class="text-gray-400">Waiting for connection...</div>
+            </div>
+        </div>
+
+        <!-- Instructions for POST /send/[id] -->
+        <div class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-md">
+            <h3 class="font-semibold text-blue-800">How to Send a Message</h3>
+            <p class="text-blue-700 text-sm mt-2">
+                After connecting, use a tool like Postman, Insomnia, or <code>curl</code> to send a POST request to <code>/send/[id]</code>.
+            </p>
+            <pre class="bg-blue-900 text-blue-100 text-xs rounded-md p-3 mt-3 overflow-x-auto">curl -X POST -H "Content-Type: application/json" -d '{"message": "Hello from curl!"}' http://localhost:3000/send/<span id="curlId" class="font-bold">your-id</span></pre>
+        </div>
+
+    </div>
+
+    <script>
+        const clientIdInput = document.getElementById('clientId');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const messagesDiv = document.getElementById('messages');
+        const curlIdSpan = document.getElementById('curlId');
+
+        let eventSource = null;
+
+        // Update the curl example command as the user types
+        clientIdInput.addEventListener('input', () => {
+            const id = clientIdInput.value.trim();
+            curlIdSpan.textContent = id || 'your-id';
+        });
+
+        // Handle Connect Button
+        connectBtn.addEventListener('click', ()=> {
+            const id = clientIdInput.value.trim();
+            if (!id) {
+                logMessage('Please enter a Client ID.', 'error');
+                return;
+            }
+
+            if (eventSource) {
+                logMessage('Already connected. Please disconnect first.', 'error');
+                return;
+            }
+
+            // --- Create the EventSource connection ---
+            const url = `/sse/${id}`; // Assumes server is on the same host
+            eventSource = new EventSource(url);
+
+            // 1. On successful connection
+            eventSource.onopen = ()=> {
+                logMessage(`Connected to server as "${id}".`, 'success');
+                connectBtn.disabled = true;
+                connectBtn.classList.add('cursor-not-allowed', 'bg-gray-400');
+                disconnectBtn.disabled = false;
+                disconnectBtn.classList.remove('cursor-not-allowed', 'bg-gray-400');
+                disconnectBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+            };
+
+            // 2. On receiving a message
+            eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    logMessage(`Received: ${JSON.stringify(data)}`, 'message');
+                } catch (e) {
+                    logMessage(`Received raw: ${event.data}`, 'message');
+                }
+            };
+
+            // 3. On error
+            eventSource.onerror = (err) => {
+                logMessage('Connection error. Server may have closed.', 'error');
+                console.error("EventSource failed:", err);
+                closeConnection();
+            };
+        });
+
+        // Handle Disconnect Button
+        disconnectBtn.addEventListener('click', ()=> {
+            closeConnection();
+        });
+
+        function closeConnection() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                logMessage('Disconnected by client.', 'system');
+            }
+            connectBtn.disabled = false;
+            connectBtn.classList.remove('cursor-not-allowed', 'bg-gray-400');
+            disconnectBtn.disabled = true;
+            disconnectBtn.classList.add('cursor-not-allowed', 'bg-gray-400');
+            disconnectBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+        }
+
+        // Helper to log messages to the UI
+        function logMessage(text, type = 'system') {
+            if (messagesDiv.children.length === 1 && messagesDiv.children[0].classList.contains('text-gray-400')) {
+                messagesDiv.innerHTML = ''; // Clear "Waiting for connection..."
+            }
+            
+            const div = document.createElement('div');
+            let colorClass = 'text-gray-300';
+            let prefix = '[SYSTEM]';
+
+            if (type === 'success') {
+                colorClass = 'text-green-400';
+                prefix = '[SUCCESS]';
+            } else if (type === 'error') {
+                colorClass = 'text-red-400';
+                prefix = '[ERROR]';
+            } else if (type === 'message') {
+                colorClass = 'text-cyan-300';
+                prefix = '[DATA]';
+            }
+
+            div.className = colorClass;
+            div.innerHTML = `<span class="select-none">${prefix} </span>${text}`;
+            messagesDiv.appendChild(div);
+
+            // Auto-scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    </script>
+</body>
+</html>
