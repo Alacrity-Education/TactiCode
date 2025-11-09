@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TactiCode</title>
+  <script src="https://unpkg.com/tone"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #0f1419;
+      color: #ffffff;
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .status {
+      text-align: left;
+      color: #ffffff;
+      min-height: 24px;
+      transition: background-color .2s ease, color .2s ease, border-color .2s ease;
+    }
+    .status.ok {
+      background: rgba(34,197,94,0.15);
+      border-left: 3px solid #22c55e;
+      padding: .5rem .75rem;
+      border-radius: 6px;
+    }
+    .status.error {
+      background: rgba(239,68,68,0.18);
+      border-left: 3px solid #ef4444;
+      padding: .5rem .75rem;
+      border-radius: 6px;
+    }
+
+    .bottom-controls { width: 100%; }
+    .play-big {
+      width: 100%;
+      font-size: 20px;
+      padding: 1rem 2rem;
+      background: linear-gradient(145deg,#2563eb,#1d4ed8);
+      border: none;
+      color: #fff;
+      font-weight: 600;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.05);
+    }
+    .play-big:disabled { opacity: .5; cursor: not-allowed; }
+
+    .block-view {
+      flex: 1;
+      width: 100%;
+      overflow-y: auto;
+      border-top: 1px solid #1e252b;
+      border-bottom: 1px solid #1e252b;
+      background: #161b22;
+      padding: .85rem 1rem 2.2rem;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: .6rem;
+    }
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      color: #ffffff;
+      opacity: .9;
+      border: 1px dashed #2d353d;
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      max-width: 440px;
+      background: rgba(255,255,255,0.02);
+    }
+
+    .block {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .6rem .85rem;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.25;
+      background: #1e252b;
+      border: 1px solid #2d353d;
+      position: relative;
+      transition: background .25s, transform .25s, box-shadow .25s, border-color .25s;
+      cursor: pointer;
+      color: #ffffff;
+    }
+    .block * { color:#ffffff !important; }
+    .block .badge {
+      background: linear-gradient(135deg,#4b5563,#374151);
+      color: #f1f5f9;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 14px;
+      min-width: 30px;
+      text-align: center;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+    }
+    .block.playing {
+      background: #0d1117;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59,130,246,0.35), 0 6px 14px rgba(0,0,0,.5);
+      transform: translateY(-3px);
+    }
+    .block-start { background: linear-gradient(135deg,#0f766e,#115e59); }
+    .block-play { background: linear-gradient(135deg,#15803d,#166534); }
+    .block-instrument-drums { background: linear-gradient(135deg,#b91c1c,#7f1d1d); }
+    .block-instrument-piano { background: linear-gradient(135deg,#7e22ce,#581c87); }
+    .block-instrument-guitar { background: linear-gradient(135deg,#1d4ed8,#1e3a8a); }
+    .block-note-pitch { background: linear-gradient(135deg,#2563eb,#1d4ed8); }
+    .block-repeat { background: linear-gradient(135deg,#374151,#1f2937); font-style: italic; }
+    .block .label { flex: 1; }
+
+    /* Popup suggestion style */
+    .popup {
+      position: fixed;
+      bottom: 30px;
+      right: 30px;
+      background: #1f2937;
+      color: #fff;
+      border: 1px solid #ef4444;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      padding: 1rem 1.25rem;
+      max-width: 340px;
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity .3s ease, transform .3s ease;
+    }
+    .popup.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .popup h4 {
+      margin: 0 0 .5rem 0;
+      font-size: 15px;
+      color: #f87171;
+    }
+    .popup p {
+      margin: 0;
+      font-size: 13px;
+      color: #f9fafb;
+    }
+    .popup button {
+      margin-top: .8rem;
+      background: #ef4444;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: .4rem .8rem;
+      font-size: 13px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout" style="flex:1; display:flex; flex-direction:column;">
+    <div style="padding:1rem 1.25rem 0;">
+      <div id="status" class="status" style="margin-top:0;"></div>
+    </div>
+    <div id="blockView" class="block-view" aria-label="Program blocks (scrollable)"></div>
+    <div class="bottom-controls" style="padding:1rem 1.25rem;">
+      <button id="playButton" class="play-big">Play</button>
+    </div>
+  </div>
+
+  <!-- Popup container -->
+  <div id="errorPopup" class="popup">
+    <h4>Error detected</h4>
+    <p id="errorMsg">Unknown error.</p>
+    <button onclick="hidePopup()">Close</button>
+  </div>
+
+  <script>
+    // Unlock Audio Context for Tone.js inside WebView
+    document.addEventListener('click', async () => {
+      if (Tone.context.state !== 'running') {
+        try {
+          await Tone.start();
+          console.log('✅ Audio unlocked');
+          setStatus('Audio unlocked', 'ok');
+        } catch (e) {
+          console.error('Audio unlock failed', e);
+          showPopup('Audio unlock failed. Try clicking anywhere on the page first to enable sound.');
+        }
+      }
+    });
+
+    const programState = { program: [], params: [] };
+    const playButton = document.getElementById('playButton');
+    const statusEl = document.getElementById('status');
+    const blockViewEl = document.getElementById('blockView');
+
+    const kickSynth = new Tone.MembraneSynth().toDestination();
+    const snareSynth = new Tone.NoiseSynth().toDestination();
+    const pianoSynth = new Tone.PolySynth(Tone.Synth).toDestination();
+    const guitarSynth = new Tone.PluckSynth().toDestination();
+
+    const instruments = {
+      Drums: {
+        Kick: t => kickSynth.triggerAttackRelease('C2', '8n', t),
+        Snare: t => snareSynth.triggerAttackRelease('8n', t)
+      },
+      Piano: {
+        1: t => pianoSynth.triggerAttackRelease('C4', '8n', t),
+        2: t => pianoSynth.triggerAttackRelease('D4', '8n', t),
+        3: t => pianoSynth.triggerAttackRelease('E4', '8n', t),
+        4: t => pianoSynth.triggerAttackRelease('F4', '8n', t),
+        5: t => pianoSynth.triggerAttackRelease('G4', '8n', t),
+        6: t => pianoSynth.triggerAttackRelease('A4', '8n', t),
+        7: t => pianoSynth.triggerAttackRelease('B4', '8n', t)
+      },
+      Guitar: {
+        1: t => guitarSynth.triggerAttack('C4', t),
+        2: t => guitarSynth.triggerAttack('D4', t),
+        3: t => guitarSynth.triggerAttack('E4', t),
+        4: t => guitarSynth.triggerAttack('F4', t),
+        5: t => guitarSynth.triggerAttack('G4', t),
+        6: t => guitarSynth.triggerAttack('A4', t),
+        7: t => guitarSynth.triggerAttack('B4', t)
+      }
+    };
+
+    function isValidNote(n) {
+      const v = Number(n);
+      return Number.isFinite(v) && v >= 1 && v <= 7;
+    }
+
+    function collectEvents(program, context, out) {
+      for (const node of program) {
+        switch (node.command) {
+          case 'start':
+            context.position = 0;
+            break;
+          case 'setInstrument': {
+            context.instrument = node.value;
+            const noteNum = Number(node.note);
+            if (isValidNote(noteNum)) {
+              out.push({
+                instrument: context.instrument,
+                value: noteNum,
+                time: context.position,
+                duration: context.step
+              });
+              context.position += context.step;
+            }
+            break;
+          }
+          case 'repeat': {
+            const times = Number(node.value) || 1;
+            for (let i = 0; i < times; i++) collectEvents(node.body || [], context, out);
+            break;
+          }
+          case 'play':
+            context.endTime = Math.max(context.endTime, context.position);
+            break;
+        }
+      }
+    }
+
+    function schedule(events, endTime, step) {
+      Tone.Transport.cancel();
+      const stopAt = endTime + (step || 0.5);
+      Tone.Transport.scheduleOnce(() => Tone.Transport.stop(), stopAt);
+      for (const evt of events) {
+        const instrument = instruments[evt.instrument];
+        if (!instrument) continue;
+        const trigger = instrument[evt.value];
+        if (typeof trigger !== 'function') continue;
+        Tone.Transport.schedule(t => trigger(t), evt.time);
+      }
+    }
+
+    function renderBlocks(blocks) {
+      blockViewEl.innerHTML = '';
+      if (!blocks?.length) {
+        blockViewEl.innerHTML = '<div class="empty-state">Waiting for JSON from Flutter...</div>';
+        return;
+      }
+      blocks.forEach((b, i) => {
+        const el = document.createElement('div');
+        el.className = `block ${b.cls || ''}`;
+        el.innerHTML = `<span class="badge">${i + 1}</span><span class="label">${b.label}</span>`;
+        blockViewEl.appendChild(el);
+      });
+    }
+
+    function buildRuntimeBlocks(program, step) {
+      const blocks = [];
+      const ctx = { position: 0, step };
+      function walk(nodes) {
+        for (const node of nodes) {
+          switch (node.command) {
+            case 'start':
+              blocks.push({ label: 'Start', cls: 'block-start', time: ctx.position });
+              break;
+            case 'setInstrument': {
+              const noteNum = Number(node.note);
+              const noteLabel = isValidNote(noteNum) ? noteNum : '-';
+              blocks.push({
+                label: `Instrument: ${node.value} (Note ${noteLabel})`,
+                cls: `block-instrument-${(node.value || '').toLowerCase()}`,
+                time: ctx.position
+              });
+              ctx.position += ctx.step;
+              break;
+            }
+            case 'repeat': {
+              const times = Number(node.value) || 1;
+              blocks.push({ label: `Repeat x${times}`, cls: 'block-repeat', time: ctx.position });
+              for (let i = 0; i < times; i++) walk(node.body || []);
+              break;
+            }
+            case 'play':
+              blocks.push({ label: 'Play', cls: 'block-play', time: ctx.position });
+              break;
+          }
+        }
+      }
+      walk(program || []);
+      return blocks;
+    }
+
+    function setStatus(msg, kind) {
+      statusEl.textContent = msg;
+      statusEl.classList.remove('ok', 'error');
+      if (kind === 'ok') statusEl.classList.add('ok');
+      if (kind === 'error') {
+        statusEl.classList.add('error');
+        showPopup(msg);
+      }
+    }
+
+    // Popup helpers
+    function showPopup(msg) {
+      const popup = document.getElementById('errorPopup');
+      const errorMsg = document.getElementById('errorMsg');
+      errorMsg.textContent = suggestFix(msg);
+      popup.classList.add('show');
+    }
+
+    function hidePopup() {
+      document.getElementById('errorPopup').classList.remove('show');
+    }
+
+    function suggestFix(msg) {
+      msg = msg.toLowerCase();
+      if (msg.includes('json')) return 'Ensure the JSON structure has a valid "program" array from Flutter.';
+      if (msg.includes('audio')) return 'Tap anywhere on the page before pressing Play to enable audio.';
+      if (msg.includes('no notes')) return 'Add at least one valid instrument note block before playing.';
+      if (msg.includes('render')) return 'Verify that Flutter sends correct data with commands like start, setInstrument, repeat, play.';
+      return 'An unknown issue occurred. Check the console for details.';
+    }
+
+    // -------- Flutter Bridge --------
+    function render(data, savedPath) {
+      try {
+        const json = typeof data === 'string' ? JSON.parse(data) : data;
+        const prog = Array.isArray(json) ? json : (json?.program || []);
+        console.log('🔎 Program from Flutter:', prog);
+
+        if (!prog.length) throw new Error("Missing 'program' array");
+
+        programState.program = prog;
+        const step = Tone.Time('8n').toSeconds();
+        const blocks = buildRuntimeBlocks(prog, step);
+        renderBlocks(blocks);
+        setStatus(`Program loaded from ${savedPath || 'Flutter'}`, 'ok');
+        playButton.disabled = false;
+      } catch (e) {
+        console.error(e);
+        setStatus('Render error: ' + e.message, 'error');
+      }
+    }
+
+    playButton.addEventListener('click', async () => {
+      await Tone.start();
+      const ctx = { instrument: 'Drums', position: 0, step: Tone.Time('8n').toSeconds(), endTime: 0 };
+      const events = [];
+      collectEvents(programState.program, ctx, events);
+      if (!events.length) return setStatus('No notes to play.', 'error');
+      schedule(events, ctx.endTime || events.at(-1).time, ctx.step);
+      setStatus('Playing...', 'ok');
+      Tone.Transport.start();
+      Tone.Transport.once('stop', () => setStatus('Finished.', 'ok'));
+    });
+  </script>
+</body>
+</html>

@@ -1,9 +1,14 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,7 +21,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Block Detector',
+      title: 'TactiCode',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(primarySwatch: Colors.blue),
       home: const CameraPage(),
@@ -24,21 +29,15 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------
-// Command parsing logic
-// ---------------------------------------------------------
+// ------------------ Command parsing logic ------------------
 Map<String, dynamic>? mapToCommand(String text) {
   text = text.toLowerCase().trim();
 
-  // START
   if (text.contains("start")) return {"command": "start"};
-
-  // END REPEAT
   if (RegExp(r'\bend\s*repeat\b').hasMatch(text)) {
     return {"command": "endRepeat"};
   }
 
-  // REPEAT n TIMES
   if (RegExp(r'\brepeat\b').hasMatch(text)) {
     final numberMatch =
         RegExp(r'repeat\s+(\d+)\s*(?:times|x)?\b').firstMatch(text);
@@ -46,10 +45,7 @@ Map<String, dynamic>? mapToCommand(String text) {
     return {"command": "repeat", "value": number, "body": []};
   }
 
-  // INSTRUMENT (+ optional note 1..7 on same line)
-  if (text.contains("drum") ||
-      text.contains("piano") ||
-      text.contains("guitar")) {
+  if (text.contains("drum") || text.contains("piano") || text.contains("guitar")) {
     final instrumentMatch = RegExp(r'(drum|piano|guitar)').firstMatch(text);
     final numOnSameLine = RegExp(r'\b([1-7])\b').firstMatch(text);
 
@@ -58,22 +54,18 @@ Map<String, dynamic>? mapToCommand(String text) {
             instrumentMatch.group(0)!.substring(1).toLowerCase()
         : "Instrument";
 
-    final result = {
+    return {
       "command": "setInstrument",
       "value": instrument,
       "note": numOnSameLine != null ? int.parse(numOnSameLine.group(1)!) : null
     };
-
-    return result;
   }
 
-  // Standalone NOTE line (only a number)
   final onlyNumber = RegExp(r'^\s*([1-7])\s*$').firstMatch(text);
   if (onlyNumber != null) {
     return {"command": "note", "value": int.parse(onlyNumber.group(1)!)};
   }
 
-  // PLAY / STOP
   if (text.contains("play") || text.contains("final") || text.contains("stop")) {
     return {"command": "play"};
   }
@@ -81,9 +73,6 @@ Map<String, dynamic>? mapToCommand(String text) {
   return null;
 }
 
-// ---------------------------------------------------------
-// Attach notes (right-side numbers) to previous instruments
-// ---------------------------------------------------------
 List<Map<String, dynamic>> _attachNotesToInstruments(
     List<Map<String, dynamic>> tokens) {
   final List<Map<String, dynamic>> out = [];
@@ -102,14 +91,13 @@ List<Map<String, dynamic>> _attachNotesToInstruments(
       if (lastInstrumentIdx != null) {
         final inst = out[lastInstrumentIdx!];
         inst["note"] = tok["value"];
-        continue; // don't add note separately
+        continue;
       }
     }
 
     out.add(Map<String, dynamic>.from(tok));
   }
 
-  // make sure every instrument has a note (default 0 if none)
   for (final item in out) {
     if (item["command"] == "setInstrument" && item["note"] == null) {
       item["note"] = 0;
@@ -119,9 +107,7 @@ List<Map<String, dynamic>> _attachNotesToInstruments(
   return out;
 }
 
-// ---------------------------------------------------------
-// Main camera + OCR handling
-// ---------------------------------------------------------
+// ------------------ CameraPage ------------------
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
 
@@ -132,8 +118,51 @@ class CameraPage extends StatefulWidget {
 class _CameraPageState extends State<CameraPage> {
   final ImagePicker _picker = ImagePicker();
   final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-  String? _jsonResult;
+
+  late final WebViewController _webController;
+  bool _pageLoaded = false;
   bool _loading = false;
+  String? _savedJsonPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _initWebView();
+  }
+
+  Future<void> _initWebView() async {
+    // iOS params allow inline playback and remove gesture requirement for media
+    final iOSParams = WebKitWebViewControllerCreationParams(
+      allowsInlineMediaPlayback: true,
+      mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+    );
+
+    // Android params (no special ctor flag for media gesture here)
+    final androidParams =  AndroidWebViewControllerCreationParams();
+
+    final PlatformWebViewControllerCreationParams params =
+        WebViewPlatform.instance is WebKitWebViewPlatform
+            ? iOSParams
+            : androidParams;
+
+    final controller = WebViewController.fromPlatformCreationParams(params)
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0x00000000))
+      ..setNavigationDelegate(
+        NavigationDelegate(onPageFinished: (_) {
+          setState(() => _pageLoaded = true);
+        }),
+      )
+      ..loadFlutterAsset('assets/viewer.html');
+
+    // Android-only: disable media playback gesture requirement on the platform controller
+    final platformCtrl = controller.platform;
+    if (platformCtrl is AndroidWebViewController) {
+      await platformCtrl.setMediaPlaybackRequiresUserGesture(false);
+    }
+
+    _webController = controller;
+  }
 
   Future<void> _scanWithCamera() async {
     final cameraStatus = await Permission.camera.request();
@@ -146,73 +175,74 @@ class _CameraPageState extends State<CameraPage> {
 
     final pickedFile = await _picker.pickImage(source: ImageSource.camera);
     if (pickedFile == null) return;
+    await _processImage(File(pickedFile.path));
+  }
 
-    final imageFile = File(pickedFile.path);
-    await _processImage(imageFile);
+  Future<File> _saveJsonToFile(String jsonContent) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/program.json');
+    await file.writeAsString(jsonContent);
+    return file;
+  }
+
+  Future<void> _sendJsonToWeb(String jsonContent, String filePath) async {
+    if (!_pageLoaded) return;
+    // ensure we pass a JSON literal string to JS
+    final jsSafe = jsonEncode(json.decode(jsonContent));
+    final js = 'render($jsSafe, ${jsonEncode(filePath)});';
+    await _webController.runJavaScript(js);
   }
 
   Future<void> _processImage(File image) async {
     setState(() {
       _loading = true;
-      _jsonResult = null;
+      _savedJsonPath = null;
     });
 
-    print("📸 Captured image path: ${image.path}");
     final inputImage = InputImage.fromFile(image);
-    final RecognizedText recognized =
-        await textRecognizer.processImage(inputImage);
-
+    final recognized = await textRecognizer.processImage(inputImage);
     final fullText = recognized.text.trim();
+
     if (fullText.isEmpty) {
-      print("⚠️ No text detected.");
-      setState(() {
-        _loading = false;
-        _jsonResult = "No text detected.";
-      });
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('No text detected')));
       return;
     }
 
-    print("🟢 Detected text:\n$fullText\n");
-
-    // Split text lines
     final parts = fullText
         .split(RegExp(r'[\n\r\.]+'))
         .map((s) => s.trim())
         .where((s) => s.isNotEmpty)
         .toList();
 
-    // Convert text -> tokens
     final tokens = parts
-        .map((text) => mapToCommand(text))
+        .map((t) => mapToCommand(t))
         .whereType<Map<String, dynamic>>()
         .toList();
 
-    // Attach numeric notes (to right of instrument)
     final commands = _attachNotesToInstruments(tokens);
-
-    // Nest repeats
     final program = _nestCommands(commands);
 
     final jsonProgram = {
       "program": program,
-      "params": ["camera_scan"],
+      "params": ["camera_scan"]
     };
 
     final jsonString = const JsonEncoder.withIndent('  ').convert(jsonProgram);
 
+    // console snapshot
     print("==== OCR JSON OUTPUT ====");
     print(jsonString);
-    print("==========================");
+    print("=========================");
 
-    setState(() {
-      _jsonResult = jsonString;
-      _loading = false;
-    });
+    final savedFile = await _saveJsonToFile(jsonString);
+    _savedJsonPath = savedFile.path;
+    await _sendJsonToWeb(jsonString, _savedJsonPath!);
+
+    setState(() => _loading = false);
   }
 
-  // ---------------------------------------------------------
-  // Helper: create nested repeats correctly
-  // ---------------------------------------------------------
   List<Map<String, dynamic>> _nestCommands(List<Map<String, dynamic>> cmds) {
     final List<Map<String, dynamic>> program = [];
     final List<Map<String, dynamic>> repeatStack = [];
@@ -229,12 +259,11 @@ class _CameraPageState extends State<CameraPage> {
       final type = (cmd["command"] ?? "").toString().toLowerCase();
 
       if (type == "repeat") {
-        final rep = {
+        repeatStack.add({
           "command": "repeat",
           "value": cmd["value"] ?? 1,
           "body": <Map<String, dynamic>>[],
-        };
-        repeatStack.add(rep);
+        });
         continue;
       }
 
@@ -256,45 +285,48 @@ class _CameraPageState extends State<CameraPage> {
     return program;
   }
 
-  // ---------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Block Detector')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Center(
-          child: _loading
-              ? const CircularProgressIndicator()
-              : SingleChildScrollView(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.camera_alt),
-                        label: const Text('Open Scanner'),
-                        onPressed: _scanWithCamera,
-                      ),
-                      const SizedBox(height: 20),
-                      if (_jsonResult != null)
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blueAccent),
-                          ),
-                          child: Text(
-                            _jsonResult!,
-                            style: const TextStyle(fontFamily: 'monospace'),
-                          ),
-                        ),
-                    ],
-                  ),
+      appBar: AppBar(title: const Text('TactiCode Detector')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('Open Scanner'),
+                  onPressed: _loading ? null : _scanWithCamera,
                 ),
-        ),
+                const SizedBox(width: 12),
+                if (_savedJsonPath != null)
+                  Expanded(
+                    child: Text(
+                      'Saved: $_savedJsonPath',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Stack(
+              children: [
+                if (_pageLoaded)
+                  WebViewWidget(controller: _webController)
+                else
+                  const Center(child: CircularProgressIndicator()),
+                if (_loading)
+                  Container(
+                    color: Colors.black.withOpacity(0.05),
+                    child: const Center(child: CircularProgressIndicator()),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
